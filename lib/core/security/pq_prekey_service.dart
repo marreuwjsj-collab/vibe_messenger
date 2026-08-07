@@ -39,7 +39,7 @@ final class PqPreKeyService {
   }
 
   Uint8List decapsulate(PqPreKeyMaterial material, Uint8List ciphertext) {
-    return Uint8List.fromList(_kem.decapsulate(material.kemSecretKey, ciphertext));
+    return Uint8List.fromList(material.consumeKemKey(() => _kem.decapsulate(material.kemSecretKey, ciphertext)));
   }
 
   Uint8List _transcript(String userId, String keyId, Uint8List kemPublicKey, Uint8List identityPublicKey) {
@@ -58,6 +58,14 @@ final class PqPreKeyMaterial {
   final E2eePreKeyBundle bundle;
   final Uint8List kemSecretKey;
   final Uint8List identitySecretKey;
+  bool _kemConsumed = false;
 
-  const PqPreKeyMaterial({required this.bundle, required this.kemSecretKey, required this.identitySecretKey});
+  PqPreKeyMaterial({required this.bundle, required this.kemSecretKey, required this.identitySecretKey});
+
+  Uint8List consumeKemKey(Uint8List Function() decapsulate) {
+    if (_kemConsumed) throw StateError('One-time PQ pre-key has already been consumed');
+    final secret = decapsulate();
+    _kemConsumed = true;
+    return secret;
+  }
 }
