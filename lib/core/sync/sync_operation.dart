@@ -1,30 +1,36 @@
-enum SyncOperationType { sendMessage, editMessage, deleteMessage, markRead }
+enum SyncOperationType { createMessage, updateMessage, deleteMessage }
 
-enum SyncOperationState { pending, processing, completed, failed }
+enum SyncOperationStatus { pending, processing, failed, completed }
 
-class SyncOperation {
+final class SyncOperation {
   final String id;
   final SyncOperationType type;
-  final Map<String, dynamic> payload;
+  final String entityId;
+  final String payload;
   final DateTime createdAt;
   final int attempts;
-  final SyncOperationState state;
+  final SyncOperationStatus status;
+  final String? lastError;
 
   const SyncOperation({
     required this.id,
     required this.type,
+    required this.entityId,
     required this.payload,
     required this.createdAt,
     this.attempts = 0,
-    this.state = SyncOperationState.pending,
+    this.status = SyncOperationStatus.pending,
+    this.lastError,
   });
 
-  SyncOperation copyWith({int? attempts, SyncOperationState? state}) => SyncOperation(
-        id: id,
-        type: type,
-        payload: payload,
-        createdAt: createdAt,
-        attempts: attempts ?? this.attempts,
-        state: state ?? this.state,
-      );
+  SyncOperation copyWith({int? attempts, SyncOperationStatus? status, String? lastError}) => SyncOperation(
+    id: id,
+    type: type,
+    entityId: entityId,
+    payload: payload,
+    createdAt: createdAt,
+    attempts: attempts ?? this.attempts,
+    status: status ?? this.status,
+    lastError: lastError ?? this.lastError,
+  );
 }
