@@ -21,10 +21,12 @@ final class SkippedMessageKeyStore {
     }
   }
 
-  Uint8List? take(int counter) {
-    final key = _keys.remove(counter);
+  Uint8List? peek(int counter) {
+    final key = _keys[counter];
     return key == null ? null : Uint8List.fromList(key);
   }
+
+  Uint8List? take(int counter) => _keys.remove(counter);
 
   bool contains(int counter) => _keys.containsKey(counter);
 
