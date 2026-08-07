@@ -77,7 +77,7 @@ final class PqE2eeSessionEngine implements E2eeSessionEngine {
     return (session.copyWith(receiveChainKey: nextChain, receiveCounter: session.receiveCounter + 1), plaintext);
   }
 
-  static const _context = <int>[0x56, 0x49, 0x42, 0x45, 0x2D, 0x45, 0x32, 0x45, 0x45, 0x2D, 0x31];
+  static final Uint8List _context = Uint8List.fromList([0x56, 0x49, 0x42, 0x45, 0x2D, 0x45, 0x32, 0x45, 0x45, 0x2D, 0x31]);
 
   Uint8List _handshakeBytes(String sessionId, String keyId, Uint8List ciphertext, Uint8List identityKey) {
     final builder = BytesBuilder();
