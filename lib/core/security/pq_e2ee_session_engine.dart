@@ -8,20 +8,16 @@ import '../../features/messages/domain/e2ee_session.dart';
 import 'aead_cipher.dart';
 import 'e2ee_key_schedule.dart';
 import 'pq_prekey_service.dart';
-import 'skipped_message_keys.dart';
 
 final class PqE2eeSessionEngine implements E2eeSessionEngine {
   static const int _maxSkipped = 256;
   static const int _maxFutureGap = 4096;
-
   final PqPreKeyService _preKeys;
   final AeadCipher _aead;
   final E2eeKeySchedule _schedule;
-  final Map<String, SkippedMessageKeyStore> _skipped = <String, SkippedMessageKeyStore>{};
   PqPreKeyMaterial? _local;
 
-  PqE2eeSessionEngine({PqPreKeyService? preKeys, AeadCipher? aead, E2eeKeySchedule? schedule})
-      : _preKeys = preKeys ?? PqPreKeyService(), _aead = aead ?? AeadCipher(), _schedule = schedule ?? const E2eeKeySchedule();
+  PqE2eeSessionEngine({PqPreKeyService? preKeys, AeadCipher? aead, E2eeKeySchedule? schedule}) : _preKeys = preKeys ?? PqPreKeyService(), _aead = aead ?? AeadCipher(), _schedule = schedule ?? const E2eeKeySchedule();
 
   @override
   Future<E2eePreKeyBundle> createPreKeyBundle({required String userId, required String keyId}) async {
@@ -41,10 +37,7 @@ final class PqE2eeSessionEngine implements E2eeSessionEngine {
     final root = await _schedule.deriveRoot(encapsulated.sharedSecret, transcript);
     final send = await _schedule.deriveChainKey(root, initiator: true, sending: true);
     final receive = await _schedule.deriveChainKey(root, initiator: true, sending: false);
-    return (
-      E2eeSessionState(sessionId: sessionId, peerKeyId: peer.keyId, role: E2eeRole.initiator, rootKey: root, sendChainKey: send, receiveChainKey: receive),
-      E2eeHandshake(sessionId: sessionId, keyId: peer.keyId, kemCiphertext: encapsulated.ciphertext, initiatorIdentityKey: local.bundle.identitySigningPublicKey, signature: Uint8List.fromList(signature)),
-    );
+    return (E2eeSessionState(sessionId: sessionId, peerKeyId: peer.keyId, role: E2eeRole.initiator, rootKey: root, sendChainKey: send, receiveChainKey: receive), E2eeHandshake(sessionId: sessionId, keyId: peer.keyId, kemCiphertext: encapsulated.ciphertext, initiatorIdentityKey: local.bundle.identitySigningPublicKey, signature: Uint8List.fromList(signature)));
   }
 
   @override
@@ -53,8 +46,7 @@ final class PqE2eeSessionEngine implements E2eeSessionEngine {
     if (local == null) throw StateError('Local pre-key bundle is not initialized');
     if (handshake.keyId != local.bundle.keyId) throw StateError('Handshake targets a different pre-key epoch');
     final transcript = _handshakeBytes(handshake.sessionId, handshake.keyId, handshake.kemCiphertext, handshake.initiatorIdentityKey);
-    final valid = MlDsa.verify(handshake.initiatorIdentityKey, transcript, handshake.signature, DilithiumParams.mlDsa65, ctx: _context);
-    if (!valid) throw StateError('Handshake signature verification failed');
+    if (!MlDsa.verify(handshake.initiatorIdentityKey, transcript, handshake.signature, DilithiumParams.mlDsa65, ctx: _context)) throw StateError('Handshake signature verification failed');
     final shared = _preKeys.decapsulate(local, handshake.kemCiphertext);
     final root = await _schedule.deriveRoot(shared, transcript);
     final send = await _schedule.deriveChainKey(root, initiator: false, sending: true);
@@ -75,14 +67,14 @@ final class PqE2eeSessionEngine implements E2eeSessionEngine {
   Future<(E2eeSessionState, Uint8List)> decrypt(E2eeSessionState session, Uint8List packet, {required Uint8List aad}) async {
     final parsed = _decodePacket(packet);
     if (parsed.sessionId != session.sessionId) throw StateError('E2EE session mismatch');
+    if (parsed.counter < 0) throw StateError('Invalid E2EE message counter');
 
-    final skipped = _skipped.putIfAbsent(session.sessionId, () => SkippedMessageKeyStore(maxEntries: _maxSkipped));
+    final skipped = Map<int, Uint8List>.from(session.skippedMessageKeys);
     if (parsed.counter < session.receiveCounter) {
-      final key = skipped.peek(parsed.counter);
+      final key = skipped.remove(parsed.counter);
       if (key == null) throw StateError('Expired or replayed E2EE message');
       final plaintext = await _aead.decrypt(payload: parsed.payload, key: key, aad: _aad(session.sessionId, parsed.counter, aad));
-      skipped.take(parsed.counter);
-      return (session, plaintext);
+      return (session.copyWith(skippedMessageKeys: skipped), plaintext);
     }
 
     final gap = parsed.counter - session.receiveCounter;
@@ -92,7 +84,11 @@ final class PqE2eeSessionEngine implements E2eeSessionEngine {
     var counter = session.receiveCounter;
     while (counter < parsed.counter) {
       final key = await _schedule.deriveMessageKey(chain, counter);
-      skipped.put(counter, key);
+      if (skipped.length >= _maxSkipped) {
+        final oldest = skipped.keys.reduce((a, b) => a < b ? a : b);
+        skipped.remove(oldest);
+      }
+      skipped[counter] = Uint8List.fromList(key);
       chain = await _schedule.ratchet(chain, key);
       counter++;
     }
@@ -100,7 +96,7 @@ final class PqE2eeSessionEngine implements E2eeSessionEngine {
     final messageKey = await _schedule.deriveMessageKey(chain, parsed.counter);
     final plaintext = await _aead.decrypt(payload: parsed.payload, key: messageKey, aad: _aad(session.sessionId, parsed.counter, aad));
     final nextChain = await _schedule.ratchet(chain, messageKey);
-    return (session.copyWith(receiveChainKey: nextChain, receiveCounter: parsed.counter + 1), plaintext);
+    return (session.copyWith(receiveChainKey: nextChain, receiveCounter: parsed.counter + 1, skippedMessageKeys: skipped), plaintext);
   }
 
   static final Uint8List _context = Uint8List.fromList([0x56, 0x49, 0x42, 0x45, 0x2D, 0x45, 0x32, 0x45, 0x45, 0x2D, 0x31]);
@@ -126,8 +122,10 @@ final class PqE2eeSessionEngine implements E2eeSessionEngine {
   Uint8List _encodePacket(String sessionId, int counter, EncryptedPayload payload) => Uint8List.fromList(utf8.encode(jsonEncode({'v': 1, 'sid': sessionId, 'n': counter, 'p': payload.toJson()})));
 
   ({String sessionId, int counter, EncryptedPayload payload}) _decodePacket(Uint8List packet) {
-    final json = jsonDecode(utf8.decode(packet)) as Map<String, dynamic>;
-    if (json['v'] != 1) throw StateError('Unsupported E2EE packet version');
-    return (sessionId: json['sid'] as String, counter: json['n'] as int, payload: EncryptedPayload.fromJson(Map<String, dynamic>.from(json['p'] as Map)));
+    final decoded = jsonDecode(utf8.decode(packet));
+    if (decoded is! Map<String, dynamic> || decoded['v'] != 1 || decoded['sid'] is! String || decoded['n'] is! int || decoded['p'] is! Map) throw StateError('Malformed E2EE packet');
+    final counter = decoded['n'] as int;
+    if (counter < 0) throw StateError('Invalid E2EE message counter');
+    return (sessionId: decoded['sid'] as String, counter: counter, payload: EncryptedPayload.fromJson(Map<String, dynamic>.from(decoded['p'] as Map)));
   }
 }
