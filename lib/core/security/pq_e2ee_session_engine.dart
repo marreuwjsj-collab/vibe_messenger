@@ -8,11 +8,16 @@ import '../../features/messages/domain/e2ee_session.dart';
 import 'aead_cipher.dart';
 import 'e2ee_key_schedule.dart';
 import 'pq_prekey_service.dart';
+import 'skipped_message_keys.dart';
 
 final class PqE2eeSessionEngine implements E2eeSessionEngine {
+  static const int _maxSkipped = 256;
+  static const int _maxFutureGap = 4096;
+
   final PqPreKeyService _preKeys;
   final AeadCipher _aead;
   final E2eeKeySchedule _schedule;
+  final Map<String, SkippedMessageKeyStore> _skipped = <String, SkippedMessageKeyStore>{};
   PqPreKeyMaterial? _local;
 
   PqE2eeSessionEngine({PqPreKeyService? preKeys, AeadCipher? aead, E2eeKeySchedule? schedule})
@@ -70,11 +75,32 @@ final class PqE2eeSessionEngine implements E2eeSessionEngine {
   Future<(E2eeSessionState, Uint8List)> decrypt(E2eeSessionState session, Uint8List packet, {required Uint8List aad}) async {
     final parsed = _decodePacket(packet);
     if (parsed.sessionId != session.sessionId) throw StateError('E2EE session mismatch');
-    if (parsed.counter != session.receiveCounter) throw StateError('Unexpected E2EE message counter');
-    final messageKey = await _schedule.deriveMessageKey(session.receiveChainKey, parsed.counter);
+
+    final skipped = _skipped.putIfAbsent(session.sessionId, () => SkippedMessageKeyStore(maxEntries: _maxSkipped));
+    if (parsed.counter < session.receiveCounter) {
+      final key = skipped.peek(parsed.counter);
+      if (key == null) throw StateError('Expired or replayed E2EE message');
+      final plaintext = await _aead.decrypt(payload: parsed.payload, key: key, aad: _aad(session.sessionId, parsed.counter, aad));
+      skipped.take(parsed.counter);
+      return (session, plaintext);
+    }
+
+    final gap = parsed.counter - session.receiveCounter;
+    if (gap > _maxFutureGap) throw StateError('E2EE message counter gap is too large');
+
+    var chain = session.receiveChainKey;
+    var counter = session.receiveCounter;
+    while (counter < parsed.counter) {
+      final key = await _schedule.deriveMessageKey(chain, counter);
+      skipped.put(counter, key);
+      chain = await _schedule.ratchet(chain, key);
+      counter++;
+    }
+
+    final messageKey = await _schedule.deriveMessageKey(chain, parsed.counter);
     final plaintext = await _aead.decrypt(payload: parsed.payload, key: messageKey, aad: _aad(session.sessionId, parsed.counter, aad));
-    final nextChain = await _schedule.ratchet(session.receiveChainKey, messageKey);
-    return (session.copyWith(receiveChainKey: nextChain, receiveCounter: session.receiveCounter + 1), plaintext);
+    final nextChain = await _schedule.ratchet(chain, messageKey);
+    return (session.copyWith(receiveChainKey: nextChain, receiveCounter: parsed.counter + 1), plaintext);
   }
 
   static final Uint8List _context = Uint8List.fromList([0x56, 0x49, 0x42, 0x45, 0x2D, 0x45, 0x32, 0x45, 0x45, 0x2D, 0x31]);
