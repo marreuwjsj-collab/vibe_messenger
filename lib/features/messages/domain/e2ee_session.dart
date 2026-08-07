@@ -29,11 +29,18 @@ final class E2eeSessionState {
   final Uint8List receiveChainKey;
   final int sendCounter;
   final int receiveCounter;
-  const E2eeSessionState({required this.sessionId, required this.peerKeyId, required this.role, required this.rootKey, required this.sendChainKey, required this.receiveChainKey, this.sendCounter = 0, this.receiveCounter = 0});
-  E2eeSessionState copyWith({Uint8List? rootKey, Uint8List? sendChainKey, Uint8List? receiveChainKey, int? sendCounter, int? receiveCounter}) => E2eeSessionState(
-        sessionId: sessionId, peerKeyId: peerKeyId, role: role, rootKey: rootKey ?? this.rootKey,
-        sendChainKey: sendChainKey ?? this.sendChainKey, receiveChainKey: receiveChainKey ?? this.receiveChainKey,
-        sendCounter: sendCounter ?? this.sendCounter, receiveCounter: receiveCounter ?? this.receiveCounter,
+  final Map<int, Uint8List> skippedMessageKeys;
+
+  E2eeSessionState({required this.sessionId, required this.peerKeyId, required this.role, required this.rootKey, required this.sendChainKey, required this.receiveChainKey, this.sendCounter = 0, this.receiveCounter = 0, Map<int, Uint8List>? skippedMessageKeys})
+      : skippedMessageKeys = {for (final e in (skippedMessageKeys ?? const <int, Uint8List>{}).entries) e.key: Uint8List.fromList(e.value)} {
+    if (sendCounter < 0 || receiveCounter < 0) throw ArgumentError('Counters must not be negative');
+    if (rootKey.length != 32 || sendChainKey.length != 32 || receiveChainKey.length != 32) throw ArgumentError('E2EE session keys must be 32 bytes');
+    if (this.skippedMessageKeys.length > 256) throw ArgumentError('Too many skipped message keys');
+  }
+
+  E2eeSessionState copyWith({Uint8List? rootKey, Uint8List? sendChainKey, Uint8List? receiveChainKey, int? sendCounter, int? receiveCounter, Map<int, Uint8List>? skippedMessageKeys}) => E2eeSessionState(
+        sessionId: sessionId, peerKeyId: peerKeyId, role: role, rootKey: rootKey ?? this.rootKey, sendChainKey: sendChainKey ?? this.sendChainKey, receiveChainKey: receiveChainKey ?? this.receiveChainKey,
+        sendCounter: sendCounter ?? this.sendCounter, receiveCounter: receiveCounter ?? this.receiveCounter, skippedMessageKeys: skippedMessageKeys ?? this.skippedMessageKeys,
       );
 }
 
